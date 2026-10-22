@@ -7,6 +7,9 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+import os
+from pathlib import Path
+from functools import lru_cache
 import re
 import secrets
 import shutil
@@ -38,7 +41,9 @@ def processing_error(stderr, *, timed_out=False):
     if "unrecognized option" in detail or "option not found" in detail:
         return "The installed FFmpeg version does not support a required processing option."
     if "error while loading shared libraries" in detail:
-        return "FFmpeg runtime libraries are missing. Check the server's FFmpeg installation."
+        missing = re.search(r"error while loading shared libraries:\s*([a-zA-Z0-9_.+-]+)", stderr)
+        library = f" ({missing.group(1)})" if missing else ""
+        return f"FFmpeg runtime libraries are missing{library}. Rebuild the app with the Apt buildpack before Python."
     if "decoder" in detail or "encoder" in detail:
         return "The installed FFmpeg build cannot decode or convert this track's codec."
     if "invalid data" in detail or "ebml header" in detail:
@@ -46,8 +51,33 @@ def processing_error(stderr, *, timed_out=False):
     return "FFmpeg could not inspect or extract this media. Check server logs for the processing diagnostic."
 
 
+@lru_cache(maxsize=4)
+def apt_runtime_paths(root):
+    """APT alternatives (BLAS/LAPACK, etc.) can live below nested lib dirs."""
+    apt = Path(root) / ".apt"
+    binaries = [str(path) for path in (apt / "usr/bin", apt / "bin") if path.is_dir()]
+    libraries = set()
+    for parent in (apt / "usr/lib", apt / "lib"):
+        if parent.is_dir():
+            libraries.add(str(parent))
+            for entry in parent.rglob("*"):
+                if ".so" in entry.name and not entry.is_dir():
+                    libraries.add(str(entry.parent))
+    return binaries, sorted(libraries)
+
+
+def runtime_environment(root=None):
+    env = os.environ.copy()
+    binaries, libraries = apt_runtime_paths(str(root or Path(__file__).resolve().parent))
+    for key, paths in (("PATH", binaries), ("LD_LIBRARY_PATH", libraries)):
+        if paths:
+            env[key] = os.pathsep.join(paths + ([env[key]] if env.get(key) else []))
+    return env
+
+
 def available():
-    return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+    env = runtime_environment()
+    return bool(shutil.which("ffmpeg", path=env.get("PATH")) and shutil.which("ffprobe", path=env.get("PATH")))
 
 
 @contextmanager
@@ -132,7 +162,7 @@ def run_job(binary, url, open_target, output_args, *, start=None, limit=4 * 1024
                 args += ["-ss", str(start)]
             args += ["-i", source] + output_args
             process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                       stdin=subprocess.DEVNULL)
+                                       stdin=subprocess.DEVNULL, env=runtime_environment())
             diagnostics = bytearray()
             timed_out = threading.Event()
             def read_errors():

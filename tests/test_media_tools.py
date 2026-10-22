@@ -39,7 +39,7 @@ def test_extraction_selects_absolute_track_and_bounds_duration():
 
 
 def test_missing_tools_has_actionable_error(monkeypatch):
-    monkeypatch.setattr(media_tools.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(media_tools.shutil, "which", lambda _name, **_kwargs: None)
     with pytest.raises(media_tools.MediaError, match="Install FFmpeg"):
         media_tools.run_job("ffprobe", "https://example.com/a.mkv", None, [])
 
@@ -50,6 +50,22 @@ def test_processing_errors_do_not_assume_missing_byte_ranges():
     assert "22 seconds" in media_tools.processing_error("", timed_out=True)
     assert "byte ranges" not in media_tools.processing_error("unclassified failure")
     assert "secret" not in media_tools.processing_error("https://example.com/secret")
+    assert "libblas.so.3" in media_tools.processing_error("error while loading shared libraries: libblas.so.3: cannot open shared object file")
+
+
+def test_apt_runtime_includes_nested_libraries_and_preserves_environment(tmp_path, monkeypatch):
+    for relative in ("usr/bin", "usr/lib/x86_64-linux-gnu/blas", "usr/lib/x86_64-linux-gnu/lapack", "lib/x86_64-linux-gnu"):
+        (tmp_path / ".apt" / relative).mkdir(parents=True)
+    library = tmp_path / ".apt/usr/lib/x86_64-linux-gnu/blas/libblas.so.3"
+    library.write_bytes(b"fixture")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "existing-library-path")
+    monkeypatch.setenv("PATH", "existing-binary-path")
+    env = media_tools.runtime_environment(tmp_path)
+    assert str(library.parent) in env["LD_LIBRARY_PATH"]
+    assert env["LD_LIBRARY_PATH"].endswith("existing-library-path")
+    assert env["PATH"].endswith("existing-binary-path")
+    assert str(tmp_path / ".apt/usr/bin") in env["PATH"]
+    assert media_tools.os.environ["LD_LIBRARY_PATH"] == "existing-library-path"
 
 
 @pytest.mark.parametrize("address,blocked", [

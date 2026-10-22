@@ -246,6 +246,13 @@ Public NAT64 destinations are checked by their embedded IPv4 address; translated
 loopback/private/link-local destinations remain blocked. Processing errors now
 distinguish timeouts, codec/option failures, and upstream relay errors. Bounded
 FFmpeg diagnostics are written to server logs with source URLs redacted.
+FFmpeg subprocesses explicitly include `.apt/usr/bin`, `.apt/bin`, and discovered
+APT shared-library directories, including nested BLAS/LAPACK/PulseAudio locations,
+while preserving existing environment paths. If a runtime library is still missing,
+the error identifies its filename. Rebuild with the Apt buildpack before Python;
+if the named library was not packaged, add its Ubuntu package to `Aptfile` and
+rebuild. This runtime path fix was tested with a simulated Apt directory layout;
+the deployed Heroku filesystem has not been inspected.
 
 Security: a previous commit tracked `.env`. It is now excluded and removed from
 the current Git tree, but remains in earlier history. Rotate any real passwords,
