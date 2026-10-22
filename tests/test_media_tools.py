@@ -1,12 +1,15 @@
 import json
+import io
 from http.client import HTTPConnection
 import threading
+from urllib.parse import urlsplit
 from unittest.mock import patch
 
 import pytest
 
 import media_tools
 from server import create_server
+from server import _is_blocked_ip
 
 
 def test_probe_normalizes_tracks_and_flags_image_subtitles():
@@ -39,6 +42,57 @@ def test_missing_tools_has_actionable_error(monkeypatch):
     monkeypatch.setattr(media_tools.shutil, "which", lambda _name: None)
     with pytest.raises(media_tools.MediaError, match="Install FFmpeg"):
         media_tools.run_job("ffprobe", "https://example.com/a.mkv", None, [])
+
+
+def test_processing_errors_do_not_assume_missing_byte_ranges():
+    assert "processing policy" in media_tools.processing_error("Protocol 'http' not on whitelist")
+    assert "option" in media_tools.processing_error("Unrecognized option 'rw_timeout'")
+    assert "22 seconds" in media_tools.processing_error("", timed_out=True)
+    assert "byte ranges" not in media_tools.processing_error("unclassified failure")
+    assert "secret" not in media_tools.processing_error("https://example.com/secret")
+
+
+@pytest.mark.parametrize("address,blocked", [
+    ("64:ff9b::8.8.8.8", False),
+    ("64:ff9b::127.0.0.1", True),
+    ("64:ff9b::10.0.0.1", True),
+    ("64:ff9b::169.254.169.254", True),
+    ("64:ff9b::192.0.2.1", True),
+    ("64:ff9b::100.64.0.1", True),
+    ("64:ff9b:1::8.8.8.8", True),
+])
+def test_nat64_policy_checks_embedded_ipv4_destination(address, blocked):
+    assert _is_blocked_ip(address) is blocked
+
+
+def test_relay_preserves_range_headers_and_bytes():
+    class Response(io.BytesIO):
+        status = 206
+        headers = {"Content-Length": "3", "Content-Range": "bytes 2-4/10", "Accept-Ranges": "bytes"}
+
+    def upstream(url, headers, timeout):
+        assert url == "https://example.com/video.mkv"
+        assert headers["Range"] == "bytes=2-4"
+        return Response(b"234")
+
+    with media_tools.relay_source("https://example.com/video.mkv", upstream) as local:
+        target = urlsplit(local)
+        connection = HTTPConnection(target.hostname, target.port, timeout=5)
+        try:
+            connection.request("GET", target.path, headers={"Range": "bytes=2-4"})
+            response = connection.getresponse()
+            assert response.status == 206
+            assert response.getheader("Content-Range") == "bytes 2-4/10"
+            assert response.read() == b"234"
+            assert not local.failure
+        finally:
+            connection.close()
+
+
+def test_empty_audio_is_not_reported_as_success():
+    with patch.object(media_tools, "run_job", return_value=b"RIFF" + b"\x00" * 96):
+        with pytest.raises(media_tools.MediaError, match="No audio samples"):
+            media_tools.extract("https://example.com/a.mkv", {"index": 2, "kind": "audio"}, 30, None)
 
 
 def test_media_endpoints_require_active_stream_and_recheck_access(tmp_path):

@@ -95,8 +95,13 @@ def _is_blocked_ip(value: str) -> bool:
     mapped = getattr(address, "ipv4_mapped", None)
     if mapped is not None:
         address = mapped
+    # The well-known NAT64 prefix embeds an IPv4 destination. Apply the same
+    # destination policy instead of treating its IPv6 reserved flag as private.
+    if isinstance(address, ipaddress.IPv6Address) and address in ipaddress.ip_network("64:ff9b::/96"):
+        address = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
     return bool(
-        address.is_private
+        not address.is_global
+        or address.is_private
         or address.is_loopback
         or address.is_link_local
         or address.is_reserved

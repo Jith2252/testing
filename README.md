@@ -236,8 +236,16 @@ Live upstream requests require network access and installed binaries. Automated
 checks cover API authorization, revocation, track mapping, bounds, and client
 state transitions; they do not establish compatibility with every MKV/codec.
 Run the client checks with `node tests/remote_tracks.test.mjs` when Node is
-available. FFmpeg/FFprobe were not installed in the development environment, so
-real decoding of the supplied remote movie has not been verified.
+available. Portable FFmpeg/FFprobe were used to verify the supplied remote MKV:
+track discovery found two Telugu audio tracks and one English SRT track;
+subtitle extraction was verified near 22 minutes and 2 hours 3 minutes, and
+alternate audio conversion produced a full 30-second WAV chunk at the latter
+position. Heroku's installed FFmpeg version and network conditions can differ.
+
+Public NAT64 destinations are checked by their embedded IPv4 address; translated
+loopback/private/link-local destinations remain blocked. Processing errors now
+distinguish timeouts, codec/option failures, and upstream relay errors. Bounded
+FFmpeg diagnostics are written to server logs with source URLs redacted.
 
 Security: a previous commit tracked `.env`. It is now excluded and removed from
 the current Git tree, but remains in earlier history. Rotate any real passwords,
