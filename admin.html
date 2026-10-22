@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="csrf-token" content="" />
+    <title>Stream Admin</title>
+    <link rel="stylesheet" href="admin.css" />
+  </head>
+  <body>
+    <main class="admin-shell">
+      <header class="admin-header">
+        <div>
+          <p class="eyebrow">STREAM CONTROL</p>
+          <h1>Stream library</h1>
+          <p class="intro">Create shareable player links, monitor availability, and manage stream expiry.</p>
+        </div>
+        <div class="header-actions">
+          <span id="adminStatus" class="status" role="status" aria-live="polite">Loading streams…</span>
+          <div class="header-buttons">
+            <button id="exportButton" class="button subtle" type="button">Export</button>
+            <label class="button subtle file-button" for="importInput">Import<input id="importInput" type="file" accept="application/json,.json,text/csv,.csv" /></label>
+            <button id="addStreamButton" class="button primary" type="button">+ Add stream</button>
+          </div>
+        </div>
+      </header>
+
+      <section class="metrics" aria-label="Stream summary">
+        <article class="metric"><span>Total streams</span><strong id="metricTotal">—</strong></article>
+        <article class="metric"><span>Enabled</span><strong id="metricEnabled">—</strong></article>
+        <article class="metric"><span>Expiring soon</span><strong id="metricExpiring">—</strong></article>
+        <article class="metric"><span>Recently tested</span><strong id="metricTested">—</strong></article>
+      </section>
+
+      <div class="tabs" role="tablist" aria-label="Admin sections">
+        <button id="streamsTab" class="tab is-active" type="button" role="tab" aria-selected="true" aria-controls="streamsPanel">Streams</button>
+        <button id="auditTab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="auditPanel" tabindex="-1">Audit log</button>
+      </div>
+
+      <section id="streamsPanel" class="panel" role="tabpanel" aria-labelledby="streamsTab">
+        <div class="panel-heading">
+          <div><p class="eyebrow">MANAGED SOURCES</p><h2 id="streamsHeading">Streams</h2></div>
+          <label class="search"><span class="sr-only">Search streams</span><input id="streamSearch" type="search" placeholder="Search name or slug" autocomplete="off" /></label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="sr-only">Managed streams</caption>
+            <thead><tr><th scope="col">Stream</th><th scope="col">Type</th><th scope="col">Status</th><th scope="col">Expires</th><th scope="col">Views</th><th scope="col" class="actions-col">Actions</th></tr></thead>
+            <tbody id="streamRows"><tr><td colspan="6" class="empty">Loading streams…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="auditPanel" class="panel audit-panel" role="tabpanel" aria-labelledby="auditTab" hidden>
+        <div class="panel-heading"><div><p class="eyebrow">ACTIVITY</p><h2 id="auditHeading">Audit log</h2></div><button id="refreshAuditButton" class="button subtle" type="button">Refresh</button></div>
+        <ol id="auditRows" class="audit-list"><li class="empty">No activity loaded.</li></ol>
+      </section>
+    </main>
+
+    <dialog id="streamDialog" aria-labelledby="dialogTitle">
+      <form id="streamForm" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">STREAM DETAILS</p><h2 id="dialogTitle">Add stream</h2></div><button id="closeDialogButton" class="icon-button" type="button" aria-label="Close dialog">×</button></div>
+        <input id="streamId" type="hidden" />
+        <div class="form-grid">
+          <label>Name<input id="streamName" name="title" required maxlength="120" autocomplete="off" /></label>
+          <label>Identifier<input id="streamSlug" name="slug" maxlength="80" autocomplete="off" /><small>Optional share slug; the backend ID is used when omitted.</small></label>
+          <label class="full">Source URL<input id="streamUrl" name="source_url" type="url" required placeholder="https://example.com/video.mp4" autocomplete="off" /><small>MP4, WebM, HLS (.m3u8), or DASH (.mpd). Type is detected as you type.</small><output id="streamType" class="type-preview" aria-live="polite">Type: —</output></label>
+          <label>Expires at<input id="streamExpiry" name="expires_at" type="datetime-local" /></label>
+          <label class="switch-field"><span>Enabled</span><input id="streamEnabled" name="enabled" type="checkbox" checked /><span class="switch" aria-hidden="true"></span></label>
+        </div>
+        <p id="formError" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions"><button id="cancelDialogButton" class="button subtle" type="button">Cancel</button><button id="saveStreamButton" class="button primary" type="submit">Save stream</button></div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script src="admin.js" defer></script>
+  </body>
+</html>

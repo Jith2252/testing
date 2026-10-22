@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Local Video Player</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">LOCAL MEDIA</p>
+          <h1>Video Player</h1>
+          <p class="app-intro">A focused, private player for local video and subtitle files.</p>
+        </div>
+        <p id="status" class="status" role="status" aria-live="polite">Ready</p>
+      </header>
+
+      <div class="player-layout">
+        <section class="player-card" aria-label="Video player">
+          <div class="video-stage" id="videoStage">
+            <video id="video" preload="metadata" playsinline>
+              Your browser does not support HTML5 video.
+            </video>
+            <div id="subtitleOverlay" class="subtitle-overlay" aria-live="polite"></div>
+            <div id="emptyState" class="empty-state" role="region" aria-label="Open a video">
+              <div class="empty-icon" aria-hidden="true">▶</div>
+              <strong>Drop a video here to begin</strong>
+              <span>Video and subtitle files are kept on this device.</span>
+              <button id="openVideoButton" class="open-video-button" type="button" aria-label="Open video" title="Open video">
+                <span aria-hidden="true">＋</span>
+                Open video
+              </button>
+              <small>or drag a video or subtitle file onto this area</small>
+            </div>
+          </div>
+
+          <div class="controls" aria-label="Playback controls">
+            <div class="timeline-row">
+              <span id="currentTime" class="time">0:00</span>
+              <div class="seek-wrap">
+                <input id="seekBar" class="seek-bar" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek through video" title="Seek through video" />
+                <output id="seekPreview" class="seek-preview" aria-hidden="true">0:00</output>
+              </div>
+              <span id="duration" class="time">0:00</span>
+            </div>
+
+            <div class="control-row">
+              <div class="control-group primary-controls" aria-label="Playback navigation">
+                <button id="playButton" class="icon-button icon-button-primary" type="button" aria-label="Play" title="Play">▶</button>
+                <button id="previousButton" class="icon-button" type="button" aria-label="Previous video" title="Previous video" data-tooltip="Previous video" disabled>⏮</button>
+                <button id="backButton" class="icon-button" type="button" aria-label="Back 10 seconds" title="Back 10 seconds" data-tooltip="Back 10 seconds">↶</button>
+                <button id="forwardButton" class="icon-button" type="button" aria-label="Forward 10 seconds" title="Forward 10 seconds" data-tooltip="Forward 10 seconds">↷</button>
+                <button id="nextButton" class="icon-button" type="button" aria-label="Next video" title="Next video" data-tooltip="Next video" disabled>⏭</button>
+              </div>
+
+              <div class="control-group volume-control">
+                <button id="muteButton" class="icon-button" type="button" aria-label="Mute" title="Mute">🔊</button>
+                <input id="volumeBar" type="range" min="0" max="1" value="1" step="0.01" aria-label="Volume" title="Volume" />
+              </div>
+
+              <div class="control-group option-controls">
+                <label class="select-label" for="audioSelect">
+                  <span>Audio</span>
+                  <select id="audioSelect" aria-label="Audio track" title="Audio track" disabled>
+                    <option>Audio: Original</option>
+                  </select>
+                </label>
+                <label class="select-label" for="speedSelect">
+                  <span>Speed</span>
+                  <select id="speedSelect" aria-label="Playback speed" title="Playback speed">
+                    <option value="0.5">Speed: 0.5×</option>
+                    <option value="0.75">Speed: 0.75×</option>
+                    <option value="1" selected>Speed: 1×</option>
+                    <option value="1.25">Speed: 1.25×</option>
+                    <option value="1.5">Speed: 1.5×</option>
+                    <option value="1.75">Speed: 1.75×</option>
+                    <option value="2">Speed: 2×</option>
+                  </select>
+                </label>
+                <button id="fullscreenButton" class="icon-button" type="button" aria-label="Enter fullscreen" title="Enter fullscreen" data-tooltip="Enter fullscreen">⛶</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="media-sidebar" aria-label="Media tools">
+          <section class="source-panel" aria-label="Media sources">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">MEDIA SOURCES</p>
+                <h2>Build your queue</h2>
+              </div>
+              <span id="resumeHint" class="hint">Resume is saved locally</span>
+            </div>
+
+            <div class="url-source">
+              <label for="videoUrl">Video or stream URL</label>
+              <div class="url-form">
+                <input id="videoUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://example.com/video.mp4" aria-label="Video or stream URL" />
+                <button id="openUrlButton" class="url-button" type="button" aria-label="Open URL" title="Open URL">Open URL</button>
+              </div>
+              <p class="url-help">Supports MP4, WebM, HLS <code>.m3u8</code>, and DASH <code>.mpd</code> streams.</p>
+            </div>
+
+            <div class="file-grid">
+              <label class="file-picker">
+                <span>Video files</span>
+                <input id="videoFile" type="file" accept="video/*,.mkv,.avi,.mov,.webm,.mp4" multiple aria-label="Choose video files" />
+                <span id="videoFileName" class="file-name">Choose one or more files</span>
+              </label>
+              <label class="file-picker">
+                <span>Subtitle file <small>(optional)</small></span>
+                <input id="subtitleFile" type="file" accept=".srt,.vtt,.webm,.webvtt,.ass,.ssa,text/vtt,text/plain" aria-label="Choose a subtitle file" />
+                <span id="subtitleFileName" class="file-name">Choose a file</span>
+              </label>
+            </div>
+
+            <div class="subtitle-settings" aria-labelledby="subtitleSettingsHeading">
+              <div class="playlist-heading">
+                <div>
+                  <p class="eyebrow">SUBTITLES</p>
+                  <h2 id="subtitleSettingsHeading">Appearance</h2>
+                </div>
+                <span class="hint">Saved on this device</span>
+              </div>
+              <div class="subtitle-preview" aria-label="Live subtitle preview">
+                <span id="subtitlePreviewText">A quiet moment, then the story continues.</span>
+              </div>
+              <div class="subtitle-settings-grid">
+                <div class="subtitle-setting">
+                  <label for="subtitleFontSize">Font size <output id="subtitleFontSizeValue" for="subtitleFontSize">24 px</output></label>
+                  <input id="subtitleFontSize" type="range" min="12" max="48" step="1" value="24" aria-label="Subtitle font size" />
+                </div>
+                <div class="subtitle-setting">
+                  <label for="subtitleColor">Text color</label>
+                  <input id="subtitleColor" type="color" value="#ffffff" aria-label="Subtitle text color" />
+                </div>
+                <div class="subtitle-setting">
+                  <label for="subtitleBackgroundOpacity">Background opacity <output id="subtitleBackgroundOpacityValue" for="subtitleBackgroundOpacity">50%</output></label>
+                  <input id="subtitleBackgroundOpacity" type="range" min="0" max="100" step="1" value="50" aria-label="Subtitle background opacity" />
+                </div>
+                <div class="subtitle-setting">
+                  <label for="subtitlePosition">Position</label>
+                  <select id="subtitlePosition" aria-label="Subtitle position">
+                    <option value="bottom" selected>Bottom</option>
+                    <option value="middle">Middle</option>
+                    <option value="top">Top</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div id="playlistPanel" class="playlist-panel" hidden aria-label="Playlist">
+              <div class="playlist-heading">
+                <div>
+                  <p class="eyebrow">QUEUE</p>
+                  <strong>Playlist</strong>
+                </div>
+                <span id="playlistCount" class="hint">0 videos</span>
+              </div>
+              <ol id="playlistItems" class="playlist-list"></ol>
+            </div>
+
+            <details class="shortcuts-panel">
+              <summary>Shortcuts</summary>
+              <ul class="shortcut-list">
+                <li><kbd>Space</kbd><span>Play / pause</span></li>
+                <li><kbd>←</kbd> <kbd>→</kbd><span>Seek 10 seconds</span></li>
+                <li><kbd>M</kbd><span>Mute / unmute</span></li>
+                <li><kbd>F</kbd><span>Toggle fullscreen</span></li>
+                <li><kbd>[</kbd> <kbd>]</kbd><span>Adjust speed</span></li>
+              </ul>
+            </details>
+
+            <p class="source-note">You can also load a server-provided source with <code>?video=/path/movie.mp4&amp;subtitle=/path/movie.srt</code>.</p>
+          </section>
+        </aside>
+      </div>
+    </main>
+    <script src="source_utils.js" defer></script>
+    <script src="playlist.js" defer></script>
+    <script src="vendor/hls.min.js" defer></script>
+    <script src="vendor/dash.all.min.js" defer></script>
+    <script src="player.js" defer></script>
+    <script src="subtitle_style.js" defer></script>
+  </body>
+</html>

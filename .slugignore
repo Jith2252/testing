@@ -1,0 +1,11 @@
+tests/
+.pytest_cache/
+__pycache__/
+.omnirush/
+.agents/
+.codex/
+.aws/
+.env
+.env.*
+*.db
+*.sqlite3

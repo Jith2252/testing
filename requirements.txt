@@ -1,0 +1,2 @@
+# Used only when DATABASE_URL is a PostgreSQL URL; do not install locally for SQLite.
+psycopg[binary]>=3.1,<4
