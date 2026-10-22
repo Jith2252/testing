@@ -80,6 +80,40 @@
     status.classList.toggle('error', isError);
   };
 
+  const remoteTracks = new window.RemoteTracks(video, {
+    status: setStatus,
+    captions: (text, start, track) => {
+      if (!track || selectedSubtitleId !== `server-subtitle-${track.index}`) return;
+      subtitleCues = parseSubtitles(text, 'embedded.vtt').map((cue) => ({ ...cue, start: cue.start + start, end: cue.end + start }));
+      externalSubtitleActive = true;
+      renderSubtitle(video.currentTime);
+    },
+    audioFailed: () => { selectedAudioId = 'server-original'; audioSelect.value = selectedAudioId; updateMuteButton(); },
+    tracks: (tracks) => {
+      const subtitles = tracks.filter((track) => track.kind === 'subtitle');
+      const readable = subtitles.filter((track) => track.supported);
+      embeddedTrackModel.subtitle = readable.map((track) => ({ ...track, id: `server-subtitle-${track.index}`, serverTrack: track }));
+      const audio = tracks.filter((track) => track.kind === 'audio');
+      embeddedTrackModel.audio = [
+        { id: 'server-original', label: 'Original (browser)', original: true },
+        ...audio.map((track) => ({ ...track, id: `server-audio-${track.index}`, serverTrack: track })),
+      ];
+      audioSelect.replaceChildren(...embeddedTrackModel.audio.map((track) => new Option(`Audio: ${track.label}`, track.id)));
+      audioSelect.disabled = audio.length === 0;
+      selectedAudioId = 'server-original';
+      const preferredAudio = readTrackPreference(PREFERRED_AUDIO_KEY);
+      const selectedAudio = preferredAudio && preferredAudio.id !== 'server-original' && audio.length
+        ? choosePreferredTrack(embeddedTrackModel.audio.slice(1), preferredAudio) : null;
+      if (selectedAudio) selectAudioTrack(selectedAudio.id, { persist: false });
+      const subtitlePreference = readTrackPreference(PREFERRED_SUBTITLE_KEY);
+      const selected = choosePreferredTrack(embeddedTrackModel.subtitle, subtitlePreference, { subtitle: true })
+        || (subtitlePreference?.id === 'off' ? null : embeddedTrackModel.subtitle[0]);
+      setSubtitleOptions(embeddedTrackModel.subtitle, externalSubtitleActive ? 'external' : (selected?.id || 'off'));
+      if (!externalSubtitleActive) selectSubtitleTrack(selected?.id || 'off', { persist: false });
+      setStatus(`Found ${readable.length} text subtitle and ${audio.length} audio tracks${subtitles.length > readable.length ? '; image subtitles require OCR' : ''}.`);
+    },
+  });
+
   const loadPlayerConfig = async () => {
     try {
       const response = await fetch('/config', { headers: { Accept: 'application/json' }, credentials: 'same-origin' });
@@ -119,7 +153,11 @@
 
   const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
-  const normalizeLanguage = (value) => String(value || '').trim().toLowerCase().replace('_', '-');
+  const normalizeLanguage = (value) => {
+    const normalized = String(value || '').trim().toLowerCase().replace('_', '-');
+    const aliases = { eng: 'en', tel: 'te', hin: 'hi', tam: 'ta', mal: 'ml', kan: 'kn', spa: 'es', fra: 'fr', fre: 'fr', deu: 'de', ger: 'de', jpn: 'ja', kor: 'ko', zho: 'zh', chi: 'zh' };
+    return aliases[normalized] || normalized;
+  };
 
   const revealControls = () => {
     playerCard.classList.remove('controls-idle');
@@ -142,7 +180,7 @@
   };
 
   const updateMuteButton = () => {
-    const muted = video.muted || video.volume === 0;
+    const muted = (remoteTracks.audioTrack ? remoteTracks.audio.muted : video.muted) || video.volume === 0;
     muteButton.textContent = muted ? '🔇' : '🔊';
     muteButton.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
     muteButton.title = muted ? 'Unmute' : 'Mute';
@@ -360,7 +398,7 @@
   const setSubtitleOptions = (tracks, selectedId = selectedSubtitleId) => {
     if (!subtitleSelect) return;
     subtitleSelect.replaceChildren(new Option('Subtitles: Off', 'off', selectedId === 'off'));
-    if (externalSubtitleActive) subtitleSelect.append(new Option('Subtitles: External file', 'external', selectedId === 'external'));
+    if (externalSubtitleActive && !selectedId.startsWith('server-subtitle-')) subtitleSelect.append(new Option('Subtitles: External file', 'external', selectedId === 'external'));
     tracks.forEach((track) => subtitleSelect.append(new Option(`Subtitles: ${track.label}`, track.id, track.id === selectedId)));
     subtitleSelect.value = selectedId;
     subtitleSelect.disabled = tracks.length === 0 && !externalSubtitleActive;
@@ -383,6 +421,17 @@
 
   const selectSubtitleTrack = (value, { persist = true } = {}) => {
     const track = embeddedTrackModel.subtitle.find((item) => item.id === value);
+    remoteTracks.selectSubtitle(null);
+    if (track?.serverTrack) {
+      selectedSubtitleId = value;
+      externalSubtitleActive = true;
+      subtitleCues = [];
+      forceSubtitleTrackModes(null);
+      remoteTracks.selectSubtitle(track.serverTrack);
+      if (persist) writeTrackPreference(PREFERRED_SUBTITLE_KEY, track);
+      subtitleSelect.value = value;
+      return;
+    }
     externalSubtitleActive = value === 'external';
     selectedSubtitleId = value || 'off';
     if (value === 'off') {
@@ -408,6 +457,13 @@
     const track = embeddedTrackModel.audio.find((item) => item.id === value);
     if (!track) return;
     selectedAudioId = track.id;
+    if (track.serverTrack || track.original) {
+      remoteTracks.selectAudio(track.serverTrack || null);
+      if (persist) writeTrackPreference(PREFERRED_AUDIO_KEY, track);
+      audioSelect.value = selectedAudioId;
+      updateMuteButton();
+      return;
+    }
     preservePlaybackPosition(() => {
       if (hlsInstance) hlsInstance.audioTrack = track.backendIndex;
       else if (dashInstance && typeof dashInstance.setCurrentTrack === 'function') dashInstance.setCurrentTrack(track.ref || track.backendTrack);
@@ -517,6 +573,7 @@
   };
 
   const loadSubtitleText = (text, sourceName) => {
+    remoteTracks.selectSubtitle(null);
     subtitleCues = parseSubtitles(text, sourceName);
     externalSubtitleActive = subtitleCues.length > 0;
     selectedSubtitleId = externalSubtitleActive ? 'external' : 'off';
@@ -616,6 +673,7 @@
 
   const beginSourceLoad = () => {
     sourceGeneration += 1;
+    remoteTracks.reset();
     destroyAdaptive();
     clearEmbeddedTracks();
     externalSubtitleActive = false;
@@ -766,6 +824,7 @@
   };
 
   const refreshAudioTracks = () => {
+    if (remoteTracks.token) return;
     if (dashInstance && typeof dashInstance.getTracksFor === 'function') {
       refreshDashTracks();
       return;
@@ -862,6 +921,10 @@
     }
     setVideoSource(validation.url, displayLabel, options);
     activeRemoteSource = true;
+    if (/\.mkv$/i.test(new URL(validation.url).pathname)) {
+      setStatus('Inspecting embedded MKV tracks on the server...');
+      remoteTracks.inspect(validation.url);
+    }
   };
 
   const togglePlay = () => {
@@ -877,7 +940,8 @@
   };
 
   const toggleMute = () => {
-    video.muted = !video.muted;
+    if (remoteTracks.audioTrack) remoteTracks.setMuted(!remoteTracks.audio.muted);
+    else video.muted = !video.muted;
     updateMuteButton();
   };
 
@@ -958,7 +1022,14 @@
   seekBar.addEventListener('change', () => { isSeeking = false; saveResumePosition(); });
   seekBar.addEventListener('pointermove', updateSeekPreview);
   seekBar.addEventListener('mousemove', updateSeekPreview);
-  volumeBar.addEventListener('input', () => { video.volume = Number(volumeBar.value); video.muted = video.volume === 0; updateMuteButton(); revealControls(); });
+  volumeBar.addEventListener('input', () => {
+    video.volume = Number(volumeBar.value);
+    if (remoteTracks.audioTrack) {
+      remoteTracks.audio.volume = video.volume;
+      remoteTracks.setMuted(video.volume === 0);
+    } else video.muted = video.volume === 0;
+    updateMuteButton(); revealControls();
+  });
   muteButton.addEventListener('click', toggleMute);
   speedSelect.addEventListener('change', () => { video.playbackRate = Number(speedSelect.value); revealControls(); });
   fullscreenButton.addEventListener('click', toggleFullscreen);

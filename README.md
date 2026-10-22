@@ -93,7 +93,8 @@ browser; hls.js is used where native HLS is unavailable, while dash.js handles
    the browser's CORS requests; the optional server proxy can be enabled separately.
 4. A share link at `/p/<slug>` uses the same player and controls. The share record
    supplies the title and source; embedded tracks are discovered from the media stream
-   in the viewer's browser. The current server does not store a separate subtitle URL
+   in the viewer's browser, with server-assisted discovery for remote MKV files.
+   The current server does not store a separate subtitle URL
    for an admin stream, so use the direct player or a `?subtitle=` URL for external
    subtitles on a share page.
 
@@ -179,3 +180,62 @@ and [Postgres provisioning](https://devcenter.heroku.com/articles/provisioning-h
 Include source, browser assets, tests, requirements, Procfile, `.python-version`,
 `.env.example`, ignore files, and documentation. Exclude secrets, databases, stream
 exports, virtual environments, caches, logs, editor files, and local agent metadata.
+
+### Server-assisted MKV tracks (FFmpeg required)
+
+Remote URLs ending in `.mkv` are automatically inspected by the server. This
+works for active, unexpired shared streams; arbitrary direct URLs require an
+admin login in the same browser. Local file uploads are not sent to the server.
+Select an extracted subtitle language or audio track from the existing controls.
+`Audio: Original (browser)` restores the video's original sound.
+
+Install both `ffmpeg` and `ffprobe` on the local server's PATH. On Heroku, the
+included `Aptfile` installs FFmpeg after you add the Apt buildpack **before** the
+Python buildpack and redeploy:
+
+```powershell
+heroku buildpacks:add --index 1 heroku-community/apt -a your-stream-player
+```
+
+This Apt setup applies to Heroku Cedar apps; Fir apps require the equivalent
+`.deb` Packages Cloud Native Buildpack instead. Keep the Python buildpack last.
+This command is setup for you to run; the agent
+has not changed or deployed the Heroku app. See the official
+[Heroku Apt guidance](https://help.heroku.com/IYRYW6VB/how-do-i-install-additional-software-packages-that-my-application-requires).
+
+Text subtitles (SRT, ASS/SSA, mov_text, text, and WebVTT where supported by the
+installed FFmpeg build) are converted to WebVTT in 30-second windows and rendered
+in the existing styled overlay. Image subtitles such as PGS/VobSub need OCR and
+are not converted. ASS positioning/fonts are simplified to text. Initial load,
+seeking, and chunk boundaries can briefly delay captions.
+
+Audio fallback converts the selected track into bounded 30-second stereo PCM
+windows. It follows video position, play/pause, volume, mute, and playback speed.
+The next window is prefetched. Initial preparation and slow networks can cause
+brief silent gaps; this is not a gapless HLS transcoding service. Processing does
+not convert the video codec, so the browser must still support the video itself
+(for example HEVC support varies). Native mobile fullscreen may hide the custom
+caption overlay; use the in-page player for custom captions.
+
+The upstream server must support HTTP byte ranges and indexed seeking. Each job
+has a 22-second process timeout, a 128 MiB input budget, a 4 MiB output limit, and
+there are at most two concurrent processing jobs per dyno. Sources that cannot
+seek efficiently may fail within these limits. Metadata inspection is limited
+to self-contained Matroska/WebM and MP4 demuxers. FFmpeg reads through a local
+relay that applies the existing public-address and redirect checks, rather than
+receiving untrusted remote URLs directly. No entire movie is saved to disk.
+
+Media sessions expire after six hours and are kept in memory; reload after a
+dyno restart. Use one web dyno. Stream availability is checked again for each
+extraction request; disabled/expired sources stop granting public extraction.
+Live upstream requests require network access and installed binaries. Automated
+checks cover API authorization, revocation, track mapping, bounds, and client
+state transitions; they do not establish compatibility with every MKV/codec.
+Run the client checks with `node tests/remote_tracks.test.mjs` when Node is
+available. FFmpeg/FFprobe were not installed in the development environment, so
+real decoding of the supplied remote movie has not been verified.
+
+Security: a previous commit tracked `.env`. It is now excluded and removed from
+the current Git tree, but remains in earlier history. Rotate any real passwords,
+session secrets, or service credentials previously committed there. The local
+file is preserved. `.env.example` contains placeholders only.

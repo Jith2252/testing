@@ -30,6 +30,7 @@ from subs_parser import srt_to_vtt, vtt_to_text
 from subtitle_style import normalize_subtitle_style
 from auth import IPRateLimiter, SessionManager, client_ip, require_production_config, verify_password
 from storage import create_store
+import media_tools
 
 
 PROXY_DEFAULT_MAX_BYTES = 64 * 1024 * 1024
@@ -183,15 +184,18 @@ class VideoRequestHandler(SimpleHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-            "media-src 'self' http: https:; connect-src 'self' http: https:; frame-ancestors 'self'"
+            "media-src 'self' blob: http: https:; connect-src 'self' http: https:; frame-ancestors 'self'"
             if not allow_embed() else
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-            "media-src 'self' http: https:; connect-src 'self' http: https:; frame-ancestors *",
+            "media-src 'self' blob: http: https:; connect-src 'self' http: https:; frame-ancestors *",
         )
         super().end_headers()
 
     def do_GET(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/media/chunk":
+            self._media_chunk()
+            return
         if path == "/health":
             self._serve_health()
             return
@@ -224,6 +228,9 @@ class VideoRequestHandler(SimpleHTTPRequestHandler):
             self._serve_proxy()
             return
         asset = path.lstrip("/")
+        if asset == "remote_tracks.js":
+            self._send_file(asset, base=self.server.app_root)
+            return
         if asset in {"admin.css", "admin.js", "admin_login.js", "styles.css", "player.js", "playlist.js", "source_utils.js", "subtitle_style.js", "vendor/hls.min.js", "vendor/dash.all.min.js"}:
             self._send_file(asset, base=self.server.app_root)
             return
@@ -234,6 +241,9 @@ class VideoRequestHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/media/inspect":
+            self._media_inspect()
+            return
         if path == "/admin/login":
             self._login()
             return
@@ -263,6 +273,74 @@ class VideoRequestHandler(SimpleHTTPRequestHandler):
 
     def _store(self):
         return self.server.store
+
+    def _media_allowed(self, url):
+        if self._session():
+            return True
+        # Public playback only grants processing of enabled, unexpired sources.
+        return any(row["url"] == url and self._store().get_by_slug(row["slug"], public=True)
+                   for row in self._store().list_streams())
+
+    def _media_limit(self):
+        if not self.server.media_limiter.allow(client_ip(self.headers, self.client_address[0])):
+            self._send_json({"error": "Too many media requests. Try again in a minute."}, HTTPStatus.TOO_MANY_REQUESTS)
+            return False
+        return True
+
+    def _media_inspect(self):
+        if not self._media_limit():
+            return
+        if "application/json" not in self.headers.get("Content-Type", ""):
+            self._send_json({"error": "Use an application/json request."}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            data = _read_json(self)
+            url = data.get("url", "")
+            if not isinstance(url, str) or not self._media_allowed(url):
+                self._send_json({"error": "Sign in as admin or use an active shared stream to inspect media."}, HTTPStatus.FORBIDDEN)
+                return
+            validate_proxy_target(url)
+            tracks = media_tools.inspect(url, _open_proxy_target)
+            token = secrets.token_urlsafe(32)
+            with self.server.media_lock:
+                now = time.monotonic()
+                self.server.media_sources = {key: item for key, item in self.server.media_sources.items() if item["expires"] > now}
+                if len(self.server.media_sources) >= 128:
+                    self._send_json({"error": "Media inspection is busy. Try again later."}, HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                self.server.media_sources[token] = {"url": url, "tracks": tracks, "expires": now + 6 * 3600}
+            self._send_json({"token": token, "tracks": tracks, "chunkSeconds": media_tools.CHUNK_SECONDS}, headers={"Cache-Control": "no-store"})
+        except (ValueError, AttributeError, ProxyRequestError, media_tools.MediaError) as error:
+            message = str(error) if isinstance(error, media_tools.MediaError) else "Invalid or inaccessible media source."
+            self._send_json({"error": message}, HTTPStatus.BAD_REQUEST)
+
+    def _media_chunk(self):
+        if not self._media_limit():
+            return
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        try:
+            token = query.get("token", [""])[0]
+            index = int(query.get("track", [""])[0])
+            start = int(query.get("start", ["0"])[0])
+            if start < 0 or start > 86400:
+                raise ValueError("Invalid media position")
+            with self.server.media_lock:
+                source = self.server.media_sources.get(token)
+            if not source or source["expires"] < time.monotonic() or not self._media_allowed(source["url"]):
+                self._send_json({"error": "Media session expired or stream unavailable. Reload the video."}, HTTPStatus.FORBIDDEN)
+                return
+            track = next((item for item in source["tracks"] if item["index"] == index), None)
+            if track is None:
+                raise ValueError("Unknown media track")
+            body, content_type = media_tools.extract(source["url"], track, start, _open_proxy_target)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (ValueError, media_tools.MediaError) as error:
+            self._send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 
     def _cookie(self, name):
         raw = self.headers.get("Cookie", "")
@@ -537,6 +615,7 @@ class VideoRequestHandler(SimpleHTTPRequestHandler):
         if production_enabled():
             # Never expose repository files, credentials, or the local database.
             public_files = {
+                "remote_tracks.js",
                 "index.html", "admin.css", "admin.js", "admin_login.js",
                 "styles.css", "player.js", "playlist.js", "source_utils.js",
                 "subtitle_style.js", "vendor/hls.min.js", "vendor/dash.all.min.js",
@@ -719,6 +798,9 @@ def create_server(directory: str | Path = ".", host: str = "127.0.0.1", port: in
     secret = os.environ.get("SECRET_KEY") or "development-secret-key-change-me-32-chars"
     server.session_manager = SessionManager(secret, ttl_seconds=SESSION_TTL)
     server.login_limiter = IPRateLimiter(5, 900)
+    server.media_limiter = IPRateLimiter(30, 60)
+    server.media_lock = threading.Lock()
+    server.media_sources = {}
     return server
 
 
