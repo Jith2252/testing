@@ -1104,7 +1104,8 @@
       const source = payload.playback_url || payload.stream_url || payload.url || payload.source;
       if (!source) { setStatus('The shared stream is unavailable. Ask the owner to check its source.', true); return true; }
       loadRemoteSource(source, payload.title || payload.name || slug, { autoplay: false });
-      if (payload.subtitle || payload.subtitle_url) loadSubtitleUrl(payload.subtitle || payload.subtitle_url);
+      const sharedSubtitle = payload.subtitle || payload.subtitle_url || initialSubtitle;
+      if (sharedSubtitle) loadSubtitleUrl(sharedSubtitle);
     } catch (error) {
       setStatus(`Could not load shared stream: ${error.message}. Check the server or use a direct URL.`, true);
     }

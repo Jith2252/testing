@@ -61,6 +61,9 @@ def test_public_stream_api_hides_urls_and_counts_views(app):
     assert status == 200 and json.loads(body)["url"].endswith("a.mp4")
     public = json.loads(_request(app, "GET", "/api/streams")[2])
     assert public == [{"slug": row["slug"], "title": "Demo", "type": "mp4"}]
+    share_status, _, share_body = _request(app, "GET", f"/p/{row['slug']}")
+    assert share_status == 200
+    assert b'id="subtitleSelect"' in share_body
     assert app.store.get_by_slug(row["slug"], public=False)["view_count"] == 1
     app.store.update_stream(row["id"], enabled=False)
     assert _request(app, "GET", f"/api/stream/{row['slug']}")[0] == 404

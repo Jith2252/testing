@@ -80,6 +80,30 @@ all even when they contain multiple tracks. Native HLS support varies by
 browser; hls.js is used where native HLS is unavailable, while dash.js handles
 `.mpd` sources. DRM-protected tracks remain unsupported.
 
+### Usage
+
+1. Open the main player at `/`, choose a local video, or paste an authorized HTTP(S)
+   media URL. Use the **Audio** and **Subtitles** selectors in the playback controls
+   when the source exposes alternate tracks. Subtitle selection includes **Off**.
+2. To keep using a separate subtitle file, choose an `.srt`, `.vtt`, `.ass`, or `.ssa`
+   file in **Subtitle file** (or use `?subtitle=...`). The existing subtitle appearance
+   controls apply to both external and exposed embedded captions.
+3. HLS (`.m3u8`) and DASH (`.mpd`) sources use the bundled hls.js/dash.js builds when
+   needed. Direct remote media, manifests, segments, and subtitle resources must allow
+   the browser's CORS requests; the optional server proxy can be enabled separately.
+4. A share link at `/p/<slug>` uses the same player and controls. The share record
+   supplies the title and source; embedded tracks are discovered from the media stream
+   in the viewer's browser. The current server does not store a separate subtitle URL
+   for an admin stream, so use the direct player or a `?subtitle=` URL for external
+   subtitles on a share page.
+
+Supported source formats are browser-playable MP4 and WebM files, HLS manifests, and
+DASH manifests. MKV, AVI, and MOV are accepted by the file picker only as a best-effort
+input: browser/container support varies, and this player does not transcode them or
+promise access to their embedded tracks. If a browser cannot expose the embedded tracks,
+the player reports that limitation and the separate subtitle-file loader remains
+available. DRM-protected media is outside the supported scope.
+
 ## Checks
 
 ```powershell
