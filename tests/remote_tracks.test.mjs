@@ -31,6 +31,13 @@ export async function runTests() {
   reply = async () => ({ ok: true, json: async () => ({ token: 'test', tracks: [], chunkSeconds: 30 }) });
   await player.inspect('https://example.com/test.mkv');
   assert.equal(tracks.length, 1);
+  assert.equal(player.inspectionState, 'ready');
+  reply = async () => ({ ok: false, json: async () => ({ error: 'Install FFmpeg and FFprobe on the server.' }) });
+  await player.inspect('https://example.com/test.mkv');
+  assert.equal(player.inspectionState, 'error');
+  assert.match(player.inspectionMessage, /Install FFmpeg/);
+  player.reset();
+  assert.equal(player.inspectionState, 'idle');
 
   let finish;
   reply = () => new Promise((resolve) => { finish = resolve; });

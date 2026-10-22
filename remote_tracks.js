@@ -28,6 +28,8 @@
       this.controller = new AbortController();
       this.stopAudio();
       this.token = null;
+      this.inspectionState = 'idle';
+      this.inspectionMessage = '';
       this.subtitle = null;
       this.subtitleWindow = null;
       this.subtitlePending = null;
@@ -38,19 +40,30 @@
 
     async inspect(url) {
       const generation = this.generation;
+      this.inspectionState = 'loading';
+      this.inspectionMessage = 'Inspecting embedded tracks on the server...';
+      this.callbacks.status(this.inspectionMessage);
       try {
         const response = await fetch('/api/media/inspect', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url }), signal: this.controller.signal,
         });
-        const data = await response.json();
+        let data;
+        try { data = await response.json(); }
+        catch { throw new Error('The server does not expose media inspection. Deploy the latest code and reload the page.'); }
         if (generation !== this.generation) return;
         if (!response.ok) throw new Error(data.error || 'Media inspection failed.');
         this.token = data.token;
         this.chunkSeconds = data.chunkSeconds;
+        this.inspectionState = 'ready';
+        this.inspectionMessage = `Server inspection found ${data.tracks.filter((track) => track.kind === 'subtitle').length} subtitle and ${data.tracks.filter((track) => track.kind === 'audio').length} audio tracks.`;
         this.callbacks.tracks(data.tracks);
       } catch (error) {
-        if (generation === this.generation && error.name !== 'AbortError') this.callbacks.status(error.message, true);
+        if (generation === this.generation && error.name !== 'AbortError') {
+          this.inspectionState = 'error';
+          this.inspectionMessage = error.message;
+          this.callbacks.status(this.inspectionMessage, true);
+        }
       }
     }
 

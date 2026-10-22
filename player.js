@@ -1039,6 +1039,24 @@
   openVideoButton.addEventListener('click', () => videoFile.click());
   const openUrl = () => loadRemoteSource(videoUrl.value);
   openUrlButton.addEventListener('click', openUrl);
+  document.querySelector('#inspectTracksButton')?.addEventListener('click', async (event) => {
+    if (!activeRemoteSource || !activeOriginalRemoteSource || hlsInstance || dashInstance || usingHls) {
+      setStatus('Open a direct remote MKV or MP4 video first. HLS/DASH tracks are read from their manifests.', true);
+      return;
+    }
+    if (remoteTracks.inspectionState === 'loading') {
+      setStatus(remoteTracks.inspectionMessage);
+      return;
+    }
+    if (remoteTracks.token) {
+      setStatus(remoteTracks.inspectionMessage);
+      return;
+    }
+    event.currentTarget.disabled = true;
+    const button = event.currentTarget;
+    try { await remoteTracks.inspect(activeOriginalRemoteSource); }
+    finally { button.disabled = false; }
+  });
   videoUrl.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
@@ -1100,7 +1118,9 @@
     const noTrackMessage = !hasExposedTracks
       ? ' — no additional embedded audio or subtitle tracks are exposed by this browser or source'
       : '';
-    setStatus(`${formatTime(video.duration)} ready${noTrackMessage}`);
+    if (remoteTracks.inspectionState !== 'idle') {
+      setStatus(remoteTracks.inspectionMessage, remoteTracks.inspectionState === 'error');
+    } else setStatus(`${formatTime(video.duration)} ready${noTrackMessage}`);
     if (pendingAutoplay) {
       pendingAutoplay = false;
       video.play().catch(() => setStatus('Playback was blocked; press play to start', true));

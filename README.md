@@ -188,6 +188,10 @@ works for active, unexpired shared streams; arbitrary direct URLs require an
 admin login in the same browser. Local file uploads are not sent to the server.
 Select an extracted subtitle language or audio track from the existing controls.
 `Audio: Original (browser)` restores the video's original sound.
+Use **Inspect embedded tracks** to retry a failed inspection or inspect a direct
+MP4 URL. Inspection progress/errors remain visible when video metadata loads.
+If prompted, sign in at `/admin/login` or open an enabled shared stream. If the
+message asks for FFmpeg, install the buildpack below and redeploy before retrying.
 
 Install both `ffmpeg` and `ffprobe` on the local server's PATH. On Heroku, the
 included `Aptfile` installs FFmpeg after you add the Apt buildpack **before** the
