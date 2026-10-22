@@ -236,8 +236,10 @@
   };
 
   const trackLabel = (track, index) => {
-    return track?.label || track?.name || track?.labels?.[0]?.text
-      || track?.roles?.[0]?.value || track?.lang || track?.language || `Track ${index + 1}`;
+    const language = track?.lang || track?.language || track?.languageCode || '';
+    const name = track?.label || track?.name || track?.labels?.[0]?.text || track?.roles?.[0]?.value || '';
+    if (name && language && String(name).toLowerCase() !== String(language).toLowerCase()) return `${name} (${language})`;
+    return name || language || `Track ${index + 1}`;
   };
 
   const trackMatchesPreference = (track, preference) => {
@@ -883,20 +885,30 @@
     const active = Boolean(document.fullscreenElement);
     fullscreenButton.textContent = active ? '⛶' : '⛶';
     fullscreenButton.setAttribute('aria-label', active ? 'Exit fullscreen' : 'Enter fullscreen');
+    fullscreenButton.setAttribute('aria-pressed', String(active));
     fullscreenButton.title = active ? 'Exit fullscreen' : 'Enter fullscreen';
     fullscreenButton.dataset.tooltip = active ? 'Exit fullscreen' : 'Enter fullscreen';
   };
 
-  const toggleFullscreen = () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen()?.catch?.(() => setStatus('Could not exit fullscreen', true));
-      return;
+  const toggleFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if (video.webkitExitFullscreen) video.webkitExitFullscreen();
+        return;
+      }
+      if (videoStage.requestFullscreen) {
+        await videoStage.requestFullscreen();
+        return;
+      }
+      if (video.webkitEnterFullscreen) {
+        video.webkitEnterFullscreen();
+        return;
+      }
+      setStatus('Fullscreen is not available in this browser.', true);
+    } catch (error) {
+      setStatus(`Could not change fullscreen: ${error.message || 'the browser blocked the request'}`, true);
     }
-    if (!videoStage.requestFullscreen) {
-      setStatus('Fullscreen is not supported by this browser', true);
-      return;
-    }
-    videoStage.requestFullscreen().catch(() => setStatus('Fullscreen was blocked by the browser', true));
   };
 
   const adjustSpeed = (direction) => {
@@ -1013,9 +1025,11 @@
     refreshAudioTracks();
     bindNativeSubtitleTracks();
     updateProgress();
-    const hasNativeTracks = embeddedTrackModel.audio.length > 0 || embeddedTrackModel.subtitle.length > 0;
-    const tracksExposed = typeof video.audioTracks !== 'undefined' || embeddedTrackModel.subtitle.length > 0;
-    setStatus(`${formatTime(video.duration)} ready${!usingHls && !usingDash && !hasNativeTracks && !tracksExposed ? ' — embedded audio/subtitle tracks are not exposed by this browser' : ''}`);
+    const hasExposedTracks = embeddedTrackModel.audio.length > 0 || embeddedTrackModel.subtitle.length > 0;
+    const noTrackMessage = !hasExposedTracks
+      ? ' — no additional embedded audio or subtitle tracks are exposed by this browser or source'
+      : '';
+    setStatus(`${formatTime(video.duration)} ready${noTrackMessage}`);
     if (pendingAutoplay) {
       pendingAutoplay = false;
       video.play().catch(() => setStatus('Playback was blocked; press play to start', true));
