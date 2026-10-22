@@ -64,6 +64,8 @@ h2 { margin-bottom: 0; font-size: 1.2rem; line-height: 1.2; }
 .player-card, .source-panel { overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); background: rgba(17, 23, 32, 0.92); box-shadow: var(--shadow); }
 .video-stage { position: relative; display: grid; min-height: 420px; aspect-ratio: 16 / 10; place-items: center; overflow: hidden; background: #020305; }
 video { display: block; width: 100%; height: 100%; object-fit: contain; background: #020305; }
+.video-stage:fullscreen { width: 100vw; height: 100vh; max-width: none; max-height: none; min-height: 0; background: #000; }
+.video-stage:fullscreen video { width: 100%; height: 100%; }
 .empty-state { position: absolute; inset: 10%; display: grid; align-content: center; justify-items: center; gap: var(--space-2); padding: clamp(24px, 6vw, 64px); border: 1px dashed #52627c; border-radius: var(--radius-lg); color: var(--muted); background: linear-gradient(145deg, rgba(19, 28, 43, 0.94), rgba(8, 12, 18, 0.94)); text-align: center; transition: border-color 180ms ease, background 180ms ease, transform 180ms ease;
 }
 .empty-state.is-dragging, .video-stage.is-dragging .empty-state { border-color: var(--accent-strong); background: linear-gradient(145deg, rgba(45, 61, 103, 0.95), rgba(13, 20, 33, 0.95)); transform: scale(1.015); }
@@ -185,6 +187,16 @@ kbd { min-width: 24px; padding: 2px 6px; border: 1px solid var(--border-strong);
   .select-label select { flex: 1; min-width: 0; }
   .icon-button { min-width: 40px; height: 40px; }
   .empty-state { inset: 5%; padding: 22px; }
+}
+
+@media (max-width: 760px) and (orientation: landscape) {
+  .app-shell { width: 100%; padding: 10px; }
+  .video-stage { min-height: calc(100dvh - 20px); aspect-ratio: auto; }
+  .media-sidebar { display: none; }
+}
+
+@supports (padding: env(safe-area-inset-bottom)) {
+  .controls { padding-bottom: calc(17px + env(safe-area-inset-bottom)); }
 }
 
 @media (prefers-reduced-motion: reduce) {

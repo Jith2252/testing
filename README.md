@@ -50,10 +50,35 @@ restricts static access to the application's public assets.
 | `ALLOW_EMBED` | Player embedding, default off; enable with `1` |
 
 Remote media must support browser CORS and HTTPS when the player uses HTTPS.
-Only use sources you are authorized to access. Optional `vendor/hls.min.js` and
-`vendor/dash.all.min.js` are absent: HLS requires native browser support and DASH
-is unavailable. For broader format support, add licensed hls.js and dash.js
-distributions at those paths with their license notices and commit them.
+Only use sources you are authorized to access. The repository includes the
+licensed browser builds `vendor/hls.min.js` (hls.js v1.7.3) and
+`vendor/dash.all.min.js` (dash.js v5.2.1), with their license notices in
+`vendor/HLS_JS_LICENSE.txt` and `vendor/DASH_JS_LICENSE.md`.
+
+### Embedded subtitles and audio tracks
+
+The player exposes a **Subtitles** selector with `Off`, uploaded/URL subtitles,
+and embedded tracks. It also exposes the browser/native audio track list and the
+audio tracks reported by hls.js or dash.js. Selected audio and subtitle language
+preferences are saved in local storage and matched by exact language, base
+language (for example `en-US` to `en`), browser language, then the media
+default.
+
+The player deliberately does **not** set `crossorigin="anonymous"` on every
+`<video>` source. Adding that attribute can make a source that plays normally
+without CORS headers fail to load. Same-origin media and browser-native local
+files can expose embedded tracks without it; cross-origin media must provide
+the CORS headers required by the browser/player before its embedded text or
+audio tracks can be inspected. HLS and DASH manifests, playlists, segments,
+and caption resources also need suitable CORS headers when loaded directly.
+
+Embedded subtitle cues are rendered through the player overlay so the existing
+font, color, background, and position controls apply consistently. Browser
+support is not uniform: `HTMLMediaElement.audioTracks` is not implemented in
+every browser, and MKV/AVI/MOV containers may not be playable by the browser at
+all even when they contain multiple tracks. Native HLS support varies by
+browser; hls.js is used where native HLS is unavailable, while dash.js handles
+`.mpd` sources. DRM-protected tracks remain unsupported.
 
 ## Checks
 

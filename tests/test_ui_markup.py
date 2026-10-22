@@ -63,3 +63,23 @@ def test_all_buttons_have_accessible_labels():
         if not accessible_name.strip():
             unlabeled.append(attrs.get('id', '<anonymous button>'))
     assert not unlabeled, f'Buttons without accessible labels: {unlabeled}'
+
+
+def test_track_controls_and_media_accessibility_are_present():
+    markup = (ROOT / 'index.html').read_text(encoding='utf-8')
+    assert 'id="audioSelect"' in markup
+    assert 'id="subtitleSelect"' in markup
+    assert 'value="off">Subtitles: Off' in markup
+    assert 'aria-label="Video playback"' in markup
+    assert 'aria-live="off"' in markup
+    assert 'crossorigin=' not in markup.lower()
+
+
+def test_adaptive_player_assets_and_licenses_are_bundled():
+    for path in (
+        ROOT / 'vendor' / 'hls.min.js',
+        ROOT / 'vendor' / 'dash.all.min.js',
+        ROOT / 'vendor' / 'HLS_JS_LICENSE.txt',
+        ROOT / 'vendor' / 'DASH_JS_LICENSE.md',
+    ):
+        assert path.is_file() and path.stat().st_size > 100, path

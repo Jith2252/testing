@@ -21,10 +21,10 @@
       <div class="player-layout">
         <section class="player-card" aria-label="Video player">
           <div class="video-stage" id="videoStage">
-            <video id="video" preload="metadata" playsinline>
+            <video id="video" preload="metadata" playsinline aria-label="Video playback">
               Your browser does not support HTML5 video.
             </video>
-            <div id="subtitleOverlay" class="subtitle-overlay" aria-live="polite"></div>
+            <div id="subtitleOverlay" class="subtitle-overlay" aria-live="off"></div>
             <div id="emptyState" class="empty-state" role="region" aria-label="Open a video">
               <div class="empty-icon" aria-hidden="true">▶</div>
               <strong>Drop a video here to begin</strong>
@@ -66,6 +66,12 @@
                   <span>Audio</span>
                   <select id="audioSelect" aria-label="Audio track" title="Audio track" disabled>
                     <option>Audio: Original</option>
+                  </select>
+                </label>
+                <label class="select-label" for="subtitleSelect">
+                  <span>Subtitles</span>
+                  <select id="subtitleSelect" aria-label="Subtitle track" title="Subtitle track" disabled>
+                    <option value="off">Subtitles: Off</option>
                   </select>
                 </label>
                 <label class="select-label" for="speedSelect">

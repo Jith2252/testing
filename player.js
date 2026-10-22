@@ -21,6 +21,21 @@
   const volumeBar = document.querySelector('#volumeBar');
   const speedSelect = document.querySelector('#speedSelect');
   const audioSelect = document.querySelector('#audioSelect');
+  let subtitleSelect = document.getElementById('subtitleSelect');
+  if (!subtitleSelect && audioSelect) {
+    subtitleSelect = document.createElement('select');
+    subtitleSelect.id = 'subtitleSelect';
+    subtitleSelect.setAttribute('aria-label', 'Subtitle track');
+    subtitleSelect.title = 'Subtitle track';
+    subtitleSelect.className = audioSelect.className;
+    subtitleSelect.disabled = true;
+    const label = document.createElement('label');
+    label.className = 'select-label';
+    label.htmlFor = 'subtitleSelect';
+    label.textContent = 'Subtitles';
+    audioSelect.parentElement?.parentElement?.insertBefore(label, audioSelect.parentElement);
+    audioSelect.parentElement?.parentElement?.insertBefore(subtitleSelect, audioSelect.parentElement);
+  }
   const currentTimeLabel = document.querySelector('#currentTime');
   const durationLabel = document.querySelector('#duration');
   const videoFile = document.querySelector('#videoFile');
@@ -34,6 +49,8 @@
 
   const params = new URLSearchParams(window.location.search);
   const RESUME_PREFIX = 'local-video-player:resume:';
+  const PREFERRED_AUDIO_KEY = 'local-video-player:preferred-audio-track';
+  const PREFERRED_SUBTITLE_KEY = 'local-video-player:preferred-subtitle-track';
   const objectUrls = [];
   let subtitleCues = [];
   let lastSavedTime = -1;
@@ -50,6 +67,13 @@
   let proxyConfigLoaded = false;
   let proxyFallbackAttempted = false;
   let activeOriginalRemoteSource = '';
+  let sourceGeneration = 0;
+  let externalSubtitleActive = false;
+  let selectedSubtitleId = 'off';
+  let selectedAudioId = '';
+  let trackBindings = [];
+  let trackListBindings = [];
+  let embeddedTrackModel = { audio: [], subtitle: [] };
 
   const setStatus = (message, isError = false) => {
     status.textContent = message;
@@ -77,9 +101,10 @@
     setStatus('Direct playback failed; trying the configured server proxy…');
     const proxied = proxySource(url);
     const type = window.SourceUtils?.detectSourceType(url);
-    if (type === 'm3u8') loadHlsSource(proxied, `${label || 'stream'} (proxy)`, { ...options, isProxy: true });
-    else if (type === 'mpd') loadDashSource(proxied, `${label || 'stream'} (proxy)`, { ...options, isProxy: true });
-    else { setVideoSource(proxied, `${label || 'stream'} (proxy)`, options); activeRemoteSource = true; proxyFallbackAttempted = true; }
+    const fallbackOptions = { ...options, isProxy: true, originalSource: options.originalSource || url };
+    if (type === 'm3u8') loadHlsSource(proxied, `${label || 'stream'} (proxy)`, fallbackOptions);
+    else if (type === 'mpd') loadDashSource(proxied, `${label || 'stream'} (proxy)`, fallbackOptions);
+    else { setVideoSource(proxied, `${label || 'stream'} (proxy)`, fallbackOptions); activeRemoteSource = true; proxyFallbackAttempted = true; }
     return true;
   };
 
@@ -93,6 +118,8 @@
   };
 
   const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+  const normalizeLanguage = (value) => String(value || '').trim().toLowerCase().replace('_', '-');
 
   const revealControls = () => {
     playerCard.classList.remove('controls-idle');
@@ -173,6 +200,221 @@
     }
   };
 
+  const readTrackPreference = (key) => {
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || 'null');
+      return value && typeof value === 'object' ? value : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const writeTrackPreference = (key, track) => {
+    if (!track) return;
+    try {
+      localStorage.setItem(key, JSON.stringify({
+        id: track.id || '',
+        language: track.language || '',
+        label: track.label || '',
+      }));
+    } catch {
+      // Storage can be disabled; track selection still works for this session.
+    }
+  };
+
+  const languagePreferences = () => {
+    const languages = Array.isArray(navigator.languages) && navigator.languages.length
+      ? navigator.languages
+      : [navigator.language];
+    return languages.filter(Boolean).map((language) => String(language).toLowerCase());
+  };
+
+  const languageMatches = (trackLanguage, preferredLanguage) => {
+    const track = normalizeLanguage(trackLanguage);
+    const preferred = normalizeLanguage(preferredLanguage);
+    return Boolean(track && preferred && (track === preferred || track.split('-')[0] === preferred.split('-')[0]));
+  };
+
+  const trackLabel = (track, index) => {
+    return track?.label || track?.name || track?.labels?.[0]?.text
+      || track?.roles?.[0]?.value || track?.lang || track?.language || `Track ${index + 1}`;
+  };
+
+  const trackMatchesPreference = (track, preference) => {
+    if (!track || !preference) return false;
+    return (preference.id && track.id && String(preference.id) === String(track.id))
+      || (preference.language && languageMatches(track.language, preference.language))
+      || (preference.label && String(preference.label).toLowerCase() === String(track.label || '').toLowerCase());
+  };
+
+  const choosePreferredTrack = (tracks, preference, { subtitle = false } = {}) => {
+    if (!tracks.length) return null;
+    if (subtitle && preference?.id === 'off') return null;
+    const preferred = tracks.find((track) => trackMatchesPreference(track, preference));
+    if (preferred) return preferred;
+    const browserLanguage = languagePreferences().map((language) => tracks.find((track) => languageMatches(track.language, language))).find(Boolean);
+    if (browserLanguage) return browserLanguage;
+    const defaultTrack = tracks.find((track) => track.default || track.forced);
+    if (defaultTrack) return defaultTrack;
+    return subtitle ? null : tracks[0];
+  };
+
+  const clearTrackBindings = () => {
+    trackBindings.forEach(({ track, listener }) => {
+      try { track.removeEventListener('cuechange', listener); } catch { /* Ignore detached tracks. */ }
+    });
+    trackBindings = [];
+    trackListBindings.forEach(({ list, type, listener }) => {
+      try { list.removeEventListener(type, listener); } catch { /* Ignore detached track lists. */ }
+    });
+    trackListBindings = [];
+  };
+
+  const clearEmbeddedTracks = () => {
+    clearTrackBindings();
+    embeddedTrackModel = { audio: [], subtitle: [] };
+    selectedSubtitleId = 'off';
+    selectedAudioId = '';
+    if (subtitleSelect) {
+      subtitleSelect.replaceChildren(new Option('Subtitles: Off', 'off', true));
+      subtitleSelect.disabled = false;
+    }
+    if (audioSelect) {
+      audioSelect.replaceChildren(new Option('Audio: Original', ''));
+      audioSelect.disabled = true;
+    }
+    subtitleOverlay.textContent = '';
+  };
+
+  const setTrackMode = (track, mode) => {
+    try { track.mode = mode; } catch { /* Some browsers expose read-only track modes. */ }
+  };
+
+  const nativeSubtitleTrackForModel = (modelTrack) => {
+    if (!modelTrack) return null;
+    if (modelTrack.ref) return modelTrack.ref;
+    const tracks = Array.from(video.textTracks || []);
+    const exact = tracks.find((track) => trackLabel(track, 0) === modelTrack.label
+      && normalizeLanguage(track.language || track.lang) === normalizeLanguage(modelTrack.language));
+    if (exact) return exact;
+    const compatible = tracks.find((track) => languageMatches(track.language || track.lang, modelTrack.language));
+    return compatible || tracks[modelTrack.backendIndex] || null;
+  };
+
+  const forceSubtitleTrackModes = (modelTrack) => {
+    const selected = nativeSubtitleTrackForModel(modelTrack);
+    Array.from(video.textTracks || []).forEach((track) => setTrackMode(track, selected && track === selected ? 'hidden' : 'disabled'));
+    renderEmbeddedSubtitle();
+  };
+
+  const renderEmbeddedSubtitle = () => {
+    if (externalSubtitleActive) {
+      renderSubtitle(video.currentTime);
+      return;
+    }
+    if (selectedSubtitleId === 'off') {
+      subtitleOverlay.textContent = '';
+      return;
+    }
+    const selected = embeddedTrackModel.subtitle.find((track) => track.id === selectedSubtitleId);
+    const nativeTrack = nativeSubtitleTrackForModel(selected);
+    const activeCues = nativeTrack ? Array.from(nativeTrack.activeCues || []) : [];
+    subtitleOverlay.textContent = activeCues.map((cue) => cue.text || '').filter(Boolean).join('\n');
+  };
+
+  const bindNativeTrackList = () => {
+    [video.textTracks, video.audioTracks].filter(Boolean).forEach((list) => {
+      if (trackListBindings.some((binding) => binding.list === list)) return;
+      ['addtrack', 'removetrack', 'change'].forEach((type) => {
+        const listener = () => {
+          if (type === 'addtrack' || type === 'removetrack') {
+            refreshAudioTracks();
+            bindNativeSubtitleTracks();
+          }
+          renderEmbeddedSubtitle();
+        };
+        try {
+          list.addEventListener(type, listener);
+          trackListBindings.push({ list, type, listener });
+        } catch {
+          // Older browsers may not expose TextTrackList/AudioTrackList events.
+        }
+      });
+    });
+  };
+
+  const bindNativeSubtitleTracks = () => {
+    bindNativeTrackList();
+    Array.from(video.textTracks || []).forEach((track) => {
+      if (trackBindings.some((binding) => binding.track === track)) return;
+      const listener = () => renderEmbeddedSubtitle();
+      try { track.addEventListener('cuechange', listener); } catch { return; }
+      trackBindings.push({ track, listener });
+    });
+    const selected = embeddedTrackModel.subtitle.find((track) => track.id === selectedSubtitleId);
+    forceSubtitleTrackModes(selected || null);
+  };
+
+  const setSubtitleOptions = (tracks, selectedId = selectedSubtitleId) => {
+    if (!subtitleSelect) return;
+    subtitleSelect.replaceChildren(new Option('Subtitles: Off', 'off', selectedId === 'off'));
+    if (externalSubtitleActive) subtitleSelect.append(new Option('Subtitles: External file', 'external', selectedId === 'external'));
+    tracks.forEach((track) => subtitleSelect.append(new Option(`Subtitles: ${track.label}`, track.id, track.id === selectedId)));
+    subtitleSelect.value = selectedId;
+    subtitleSelect.disabled = tracks.length === 0 && !externalSubtitleActive;
+  };
+
+  const preservePlaybackPosition = (callback) => {
+    const generation = sourceGeneration;
+    const time = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    const wasPaused = video.paused;
+    callback();
+    const restore = () => {
+      if (generation !== sourceGeneration) return;
+      if (!Number.isFinite(time) || !Number.isFinite(video.duration) || video.duration <= 0) return;
+      try { video.currentTime = Math.min(time, video.duration); } catch { /* Ignore media seek races. */ }
+      if (!wasPaused && video.paused) video.play().catch(() => {});
+    };
+    restore();
+    window.setTimeout(restore, 0);
+  };
+
+  const selectSubtitleTrack = (value, { persist = true } = {}) => {
+    const track = embeddedTrackModel.subtitle.find((item) => item.id === value);
+    externalSubtitleActive = value === 'external';
+    selectedSubtitleId = value || 'off';
+    if (value === 'off') {
+      if (hlsInstance) preservePlaybackPosition(() => { hlsInstance.subtitleTrack = -1; });
+      if (dashInstance && typeof dashInstance.setTextTrack === 'function') preservePlaybackPosition(() => dashInstance.setTextTrack(-1));
+      forceSubtitleTrackModes(null);
+    } else if (value === 'external') {
+      Array.from(video.textTracks || []).forEach((item) => setTrackMode(item, 'disabled'));
+      renderSubtitle(video.currentTime);
+    } else if (track) {
+      externalSubtitleActive = false;
+      if (hlsInstance) preservePlaybackPosition(() => { hlsInstance.subtitleTrack = track.backendIndex; });
+      if (dashInstance && typeof dashInstance.setTextTrack === 'function') preservePlaybackPosition(() => dashInstance.setTextTrack(track.backendIndex));
+      forceSubtitleTrackModes(track);
+    }
+    if (persist && track) writeTrackPreference(PREFERRED_SUBTITLE_KEY, track);
+    else if (persist && value === 'off') writeTrackPreference(PREFERRED_SUBTITLE_KEY, { id: 'off', language: '', label: '' });
+    if (subtitleSelect) subtitleSelect.value = selectedSubtitleId;
+    renderEmbeddedSubtitle();
+  };
+
+  const selectAudioTrack = (value, { persist = true } = {}) => {
+    const track = embeddedTrackModel.audio.find((item) => item.id === value);
+    if (!track) return;
+    selectedAudioId = track.id;
+    preservePlaybackPosition(() => {
+      if (hlsInstance) hlsInstance.audioTrack = track.backendIndex;
+      else if (dashInstance && typeof dashInstance.setCurrentTrack === 'function') dashInstance.setCurrentTrack(track.ref || track.backendTrack);
+      else Array.from(video.audioTracks || []).forEach((item) => { item.enabled = item === track.ref; });
+    });
+    if (persist) writeTrackPreference(PREFERRED_AUDIO_KEY, track);
+    if (audioSelect) audioSelect.value = selectedAudioId;
+  };
+
   const saveResumePosition = () => {
     if (!activeVideoKey || !Number.isFinite(video.currentTime) || video.currentTime <= 0) return;
     const duration = Number.isFinite(video.duration) ? video.duration : 0;
@@ -251,8 +493,8 @@
   };
 
   const renderSubtitle = (time) => {
-    if ((usingHls || usingDash) && !subtitleCues.length) {
-      renderHlsSubtitle();
+    if (!externalSubtitleActive) {
+      renderEmbeddedSubtitle();
       return;
     }
     if (!subtitleCues.length) {
@@ -274,63 +516,77 @@
 
   const loadSubtitleText = (text, sourceName) => {
     subtitleCues = parseSubtitles(text, sourceName);
+    externalSubtitleActive = subtitleCues.length > 0;
+    selectedSubtitleId = externalSubtitleActive ? 'external' : 'off';
+    setSubtitleOptions(embeddedTrackModel.subtitle, selectedSubtitleId);
     if (subtitleCues.length) setStatus(`${subtitleCues.length} subtitle cues loaded`);
     else setStatus('Subtitle file contains no readable cues', true);
     renderSubtitle(video.currentTime);
   };
 
   const loadSubtitleUrl = async (url) => {
+    const generation = sourceGeneration;
     try {
       const response = await fetch(url);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      loadSubtitleText(await response.text(), url);
+      const text = await response.text();
+      if (generation !== sourceGeneration) return;
+      loadSubtitleText(text, url);
     } catch (error) {
+      if (generation !== sourceGeneration) return;
       subtitleCues = [];
+      externalSubtitleActive = false;
+      setSubtitleOptions(embeddedTrackModel.subtitle, 'off');
       setStatus(`Could not load subtitles: ${error.message}`, true);
     }
   };
 
-  const renderHlsSubtitle = () => {
-    if (!usingHls && !usingDash) return;
-    const activeCues = Array.from(video.textTracks || [])
-      .filter((track) => track.mode === 'showing' || track.mode === 'hidden')
-      .flatMap((track) => Array.from(track.activeCues || []));
-    subtitleOverlay.textContent = activeCues.map((cue) => cue.text || '').filter(Boolean).join('\n');
-  };
+  const renderHlsSubtitle = () => renderEmbeddedSubtitle();
 
-  const bindHlsTextTracks = () => {
-    Array.from(video.textTracks || []).forEach((track) => {
-      if (track.datasetLocalVideoPlayerBound) return;
-      track.datasetLocalVideoPlayerBound = 'true';
-      if (track.mode === 'disabled' && usingHls) track.mode = 'hidden';
-      track.addEventListener('cuechange', renderHlsSubtitle);
-    });
-    renderHlsSubtitle();
-  };
+  const bindHlsTextTracks = () => bindNativeSubtitleTracks();
 
   const refreshHlsAudioTracks = (tracks = hlsInstance?.audioTracks || []) => {
-    if (!hlsInstance || !tracks.length) {
-      if (!hlsInstance) refreshAudioTracks();
-      else { audioSelect.replaceChildren(new Option('Audio: Original', '')); audioSelect.disabled = true; }
-      return;
+    const sourceTracks = Array.from(tracks || []);
+    embeddedTrackModel.audio = sourceTracks.map((track, index) => ({
+      id: `hls-audio-${track.id ?? index}`,
+      label: trackLabel(track, index),
+      language: track.lang || track.language || '',
+      default: Boolean(track.default || track.isDefault),
+      backendIndex: index,
+      backendTrack: track,
+      ref: track,
+    }));
+    const selected = choosePreferredTrack(embeddedTrackModel.audio, readTrackPreference(PREFERRED_AUDIO_KEY));
+    selectedAudioId = selected?.id || '';
+    if (audioSelect) {
+      audioSelect.replaceChildren();
+      embeddedTrackModel.audio.forEach((track) => audioSelect.append(new Option(`Audio: ${track.label}`, track.id, track.id === selectedAudioId)));
+      if (!embeddedTrackModel.audio.length) audioSelect.append(new Option('Audio: Original', ''));
+      audioSelect.disabled = embeddedTrackModel.audio.length < 2;
     }
-    audioSelect.replaceChildren();
-    tracks.forEach((track, index) => {
-      const label = track.name || track.label || track.lang || track.language || `Track ${index + 1}`;
-      const selected = index === hlsInstance.audioTrack || (hlsInstance.audioTrack < 0 && track.default);
-      audioSelect.append(new Option(`Audio: ${label}`, String(index), selected));
-    });
-    audioSelect.disabled = tracks.length < 2;
+    if (selected && hlsInstance && hlsInstance.audioTrack !== selected.backendIndex) {
+      preservePlaybackPosition(() => { hlsInstance.audioTrack = selected.backendIndex; });
+    }
   };
 
   const refreshHlsSubtitleTracks = (tracks = hlsInstance?.subtitleTracks || []) => {
-    if (!hlsInstance || !tracks.length) {
-      subtitleOverlay.textContent = '';
-      return;
-    }
-    const selected = tracks.findIndex((track) => track.default || track.forced);
-    if (hlsInstance.subtitleTrack < 0) hlsInstance.subtitleTrack = selected >= 0 ? selected : tracks[0].id;
-    window.setTimeout(bindHlsTextTracks, 0);
+    const sourceTracks = Array.from(tracks || []);
+    embeddedTrackModel.subtitle = sourceTracks.map((track, index) => ({
+      id: `hls-subtitle-${track.id ?? index}`,
+      label: trackLabel(track, index),
+      language: track.lang || track.language || '',
+      default: Boolean(track.default || track.isDefault),
+      forced: Boolean(track.forced),
+      backendIndex: index,
+      backendTrack: track,
+      ref: null,
+    }));
+    const selected = choosePreferredTrack(embeddedTrackModel.subtitle, readTrackPreference(PREFERRED_SUBTITLE_KEY), { subtitle: true });
+    const selectedId = externalSubtitleActive ? 'external' : (selected?.id || 'off');
+    setSubtitleOptions(embeddedTrackModel.subtitle, selectedId);
+    if (!externalSubtitleActive) selectSubtitleTrack(selected?.id || 'off', { persist: false });
+    const generation = sourceGeneration;
+    window.setTimeout(() => { if (generation === sourceGeneration) bindHlsTextTracks(); }, 0);
   };
 
   const destroyHls = () => {
@@ -356,18 +612,29 @@
     return 'HLS playback failed. Check the stream URL and format.';
   };
 
+  const beginSourceLoad = () => {
+    sourceGeneration += 1;
+    destroyAdaptive();
+    clearEmbeddedTracks();
+    externalSubtitleActive = false;
+    subtitleCues = [];
+    if (subtitleFile) subtitleFile.value = '';
+    if (subtitleFileName) subtitleFileName.textContent = 'Choose a file';
+    pendingAutoplay = false;
+    return sourceGeneration;
+  };
+
   const loadHlsSource = (url, label, options = {}) => {
+    const generation = beginSourceLoad();
     const Hls = window.Hls;
     if (!Hls || typeof Hls.isSupported !== 'function' || !Hls.isSupported()) {
       setStatus('HLS is not supported here. Add vendor/hls.min.js or use a browser with native HLS.', true);
       return;
     }
-    destroyAdaptive();
-    subtitleCues = [];
     usingHls = true;
     activeRemoteSource = true;
     if (!options.isProxy) { proxyFallbackAttempted = false; activeOriginalRemoteSource = url; }
-    activeVideoKey = sourceIdentity(url);
+    activeVideoKey = sourceIdentity(options.originalSource || url);
     lastSavedTime = -1;
     pendingAutoplay = Boolean(options.autoplay);
     emptyState.hidden = true;
@@ -379,8 +646,9 @@
 
     const hls = new Hls({ renderTextTracksNatively: true });
     hlsInstance = hls;
-    hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(url));
+    hls.on(Hls.Events.MEDIA_ATTACHED, () => { if (generation === sourceGeneration && hlsInstance === hls) hls.loadSource(url); });
     hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
+      if (generation !== sourceGeneration || hlsInstance !== hls) return;
       refreshHlsAudioTracks(data?.audioTracks || hls.audioTracks || []);
       refreshHlsSubtitleTracks(data?.subtitleTracks || hls.subtitleTracks || []);
       setStatus(`${formatTime(video.duration)} HLS stream ready`);
@@ -389,10 +657,15 @@
         video.play().catch(() => setStatus('Playback was blocked; press play to start', true));
       }
     });
-    hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_event, data) => refreshHlsAudioTracks(data?.audioTracks || hls.audioTracks || []));
-    hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_event, data) => refreshHlsSubtitleTracks(data?.subtitleTracks || hls.subtitleTracks || []));
-    hls.on(Hls.Events.SUBTITLE_TRACK_LOADED, () => bindHlsTextTracks());
+    hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_event, data) => {
+      if (generation === sourceGeneration && hlsInstance === hls) refreshHlsAudioTracks(data?.audioTracks || hls.audioTracks || []);
+    });
+    hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_event, data) => {
+      if (generation === sourceGeneration && hlsInstance === hls) refreshHlsSubtitleTracks(data?.subtitleTracks || hls.subtitleTracks || []);
+    });
+    hls.on(Hls.Events.SUBTITLE_TRACK_LOADED, () => { if (generation === sourceGeneration && hlsInstance === hls) bindHlsTextTracks(); });
     hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (generation !== sourceGeneration || hlsInstance !== hls) return;
       if (data?.fatal && !tryProxyFallback(url, label, options)) setStatus(hlsErrorMessage(data), true);
     });
     hls.attachMedia(video);
@@ -408,30 +681,65 @@
 
   const refreshDashTracks = () => {
     if (!dashInstance || typeof dashInstance.getTracksFor !== 'function') return;
-    const tracks = dashInstance.getTracksFor('audio') || [];
-    audioSelect.replaceChildren();
-    tracks.forEach((track, index) => {
-      const label = track.labels?.[0]?.text || track.lang || track.roles?.[0]?.value || `Track ${index + 1}`;
-      audioSelect.append(new Option(`Audio: ${label}`, String(index), index === 0));
-    });
-    audioSelect.disabled = tracks.length < 2;
-    if (!tracks.length) audioSelect.append(new Option('Audio: Original', ''));
-    const textTracks = [...(dashInstance.getTracksFor('text') || []), ...(dashInstance.getTracksFor('fragmentedText') || [])];
-    if (textTracks.length && typeof dashInstance.setTextTrack === 'function') dashInstance.setTextTrack(0);
+    const audioTracks = Array.from(dashInstance.getTracksFor('audio') || []);
+    embeddedTrackModel.audio = audioTracks.map((track, index) => ({
+      id: `dash-audio-${track.id ?? index}`,
+      label: trackLabel({ label: track.labels?.[0]?.text || track.roles?.[0]?.value, lang: track.lang || track.language }, index),
+      language: track.lang || track.language || '',
+      default: Boolean(track.default || track.isDefault || index === 0),
+      backendIndex: index,
+      backendTrack: track,
+      ref: track,
+    }));
+    const selectedAudio = choosePreferredTrack(embeddedTrackModel.audio, readTrackPreference(PREFERRED_AUDIO_KEY));
+    selectedAudioId = selectedAudio?.id || '';
+    if (audioSelect) {
+      audioSelect.replaceChildren();
+      embeddedTrackModel.audio.forEach((track) => audioSelect.append(new Option(`Audio: ${track.label}`, track.id, track.id === selectedAudioId)));
+      if (!embeddedTrackModel.audio.length) audioSelect.append(new Option('Audio: Original', ''));
+      audioSelect.disabled = embeddedTrackModel.audio.length < 2;
+    }
+    if (selectedAudio && typeof dashInstance.setCurrentTrack === 'function') {
+      preservePlaybackPosition(() => dashInstance.setCurrentTrack(selectedAudio.backendTrack));
+    }
+
+    const textTracks = Array.from(dashInstance.getTracksFor('text') || []);
+    const fragmentedTextTracks = Array.from(dashInstance.getTracksFor('fragmentedText') || []);
+    const allTextTracks = textTracks.length ? textTracks : fragmentedTextTracks;
+    embeddedTrackModel.subtitle = allTextTracks.map((track, index) => ({
+      id: `dash-subtitle-${track.id ?? index}`,
+      label: trackLabel({ label: track.labels?.[0]?.text || track.roles?.[0]?.value, lang: track.lang || track.language }, index),
+      language: track.lang || track.language || '',
+      default: Boolean(track.default || track.isDefault || index === 0),
+      forced: Boolean(track.forced),
+      backendIndex: index,
+      backendTrack: track,
+      ref: null,
+    }));
+    const selectedSubtitle = choosePreferredTrack(embeddedTrackModel.subtitle, readTrackPreference(PREFERRED_SUBTITLE_KEY), { subtitle: true });
+    const selectedId = externalSubtitleActive ? 'external' : (selectedSubtitle?.id || 'off');
+    setSubtitleOptions(embeddedTrackModel.subtitle, selectedId);
+    if (!externalSubtitleActive && typeof dashInstance.setTextTrack === 'function') {
+      preservePlaybackPosition(() => dashInstance.setTextTrack(selectedSubtitle ? selectedSubtitle.backendIndex : -1));
+      selectedSubtitleId = selectedSubtitle?.id || 'off';
+      forceSubtitleTrackModes(selectedSubtitle || null);
+    }
+    const generation = sourceGeneration;
+    window.setTimeout(() => { if (generation === sourceGeneration) bindNativeSubtitleTracks(); }, 0);
   };
 
+
   const loadDashSource = (url, label, options = {}) => {
+    const generation = beginSourceLoad();
     const dash = window.dashjs;
     if (!dash || typeof dash.MediaPlayer !== 'function') {
       setStatus('DASH playback is unavailable. Add vendor/dash.all.min.js or use MP4/HLS.', true);
       return;
     }
-    destroyAdaptive();
-    subtitleCues = [];
     usingDash = true;
     activeRemoteSource = true;
     if (!options.isProxy) { proxyFallbackAttempted = false; activeOriginalRemoteSource = url; }
-    activeVideoKey = sourceIdentity(url);
+    activeVideoKey = sourceIdentity(options.originalSource || url);
     lastSavedTime = -1;
     pendingAutoplay = Boolean(options.autoplay);
     emptyState.hidden = true;
@@ -443,11 +751,15 @@
     const player = dash.MediaPlayer().create();
     dashInstance = player;
     player.on(dash.MediaPlayer.events.STREAM_INITIALIZED, () => {
+      if (generation !== sourceGeneration || dashInstance !== player) return;
       refreshDashTracks();
       setStatus('DASH stream ready');
       if (pendingAutoplay) { pendingAutoplay = false; video.play().catch(() => setStatus('Playback was blocked; press play to start', true)); }
     });
-    player.on(dash.MediaPlayer.events.ERROR, (event) => { if (!tryProxyFallback(url, label, options)) setStatus(dashErrorMessage(event), true); });
+    player.on(dash.MediaPlayer.events.ERROR, (event) => {
+      if (generation !== sourceGeneration || dashInstance !== player) return;
+      if (!tryProxyFallback(url, label, options)) setStatus(dashErrorMessage(event), true);
+    });
     player.initialize(video, url, false);
   };
 
@@ -460,27 +772,55 @@
       refreshHlsAudioTracks();
       return;
     }
-    audioSelect.replaceChildren();
-    const tracks = video.audioTracks;
-    if (!tracks || !tracks.length) {
-      audioSelect.disabled = true;
-      audioSelect.append(new Option('Audio: Original', ''));
-      return;
+    const tracks = Array.from(video.audioTracks || []);
+    embeddedTrackModel.audio = tracks.map((track, index) => ({
+      id: `native-audio-${track.id || index}`,
+      label: trackLabel(track, index),
+      language: track.language || track.lang || '',
+      default: Boolean(track.default || track.enabled),
+      backendIndex: index,
+      backendTrack: track,
+      ref: track,
+    }));
+    const selected = choosePreferredTrack(embeddedTrackModel.audio, readTrackPreference(PREFERRED_AUDIO_KEY));
+    selectedAudioId = selected?.id || '';
+    if (audioSelect) {
+      audioSelect.replaceChildren();
+      embeddedTrackModel.audio.forEach((track) => audioSelect.append(new Option(`Audio: ${track.label}`, track.id, track.id === selectedAudioId)));
+      if (!embeddedTrackModel.audio.length) audioSelect.append(new Option('Audio: Original', ''));
+      audioSelect.disabled = embeddedTrackModel.audio.length < 2;
     }
-    Array.from(tracks).forEach((track, index) => {
-      const label = track.label || track.language || `Track ${index + 1}`;
-      audioSelect.append(new Option(`Audio: ${label}`, String(index), track.enabled));
-    });
-    audioSelect.disabled = tracks.length < 2;
+    if (selected && tracks.some((track) => track.enabled !== (track === selected.ref))) {
+      preservePlaybackPosition(() => tracks.forEach((track) => { track.enabled = track === selected.ref; }));
+    }
+    const textTracks = Array.from(video.textTracks || []);
+    embeddedTrackModel.subtitle = textTracks.map((track, index) => ({
+      id: `native-subtitle-${track.id || index}`,
+      label: trackLabel(track, index),
+      language: track.language || track.lang || '',
+      default: Boolean(track.default),
+      forced: Boolean(track.forced),
+      backendIndex: index,
+      backendTrack: track,
+      ref: track,
+    }));
+    const selectedSubtitle = choosePreferredTrack(embeddedTrackModel.subtitle, readTrackPreference(PREFERRED_SUBTITLE_KEY), { subtitle: true });
+    const selectedId = externalSubtitleActive ? 'external' : (selectedSubtitle?.id || 'off');
+    setSubtitleOptions(embeddedTrackModel.subtitle, selectedId);
+    if (!externalSubtitleActive) {
+      selectedSubtitleId = selectedSubtitle?.id || 'off';
+      forceSubtitleTrackModes(selectedSubtitle || null);
+    }
+    bindNativeSubtitleTracks();
   };
+
 
   const setVideoSource = (source, label = source, options = {}) => {
     if (!source) return;
-    destroyAdaptive();
-    subtitleCues = [];
+    beginSourceLoad();
     activeRemoteSource = false;
     proxyFallbackAttempted = false;
-    activeVideoKey = sourceIdentity(source);
+    activeVideoKey = sourceIdentity(options.originalSource || source);
     lastSavedTime = -1;
     pendingAutoplay = Boolean(options.autoplay);
     video.src = source;
@@ -539,9 +879,24 @@
     updateMuteButton();
   };
 
+  const updateFullscreenButton = () => {
+    const active = Boolean(document.fullscreenElement);
+    fullscreenButton.textContent = active ? '⛶' : '⛶';
+    fullscreenButton.setAttribute('aria-label', active ? 'Exit fullscreen' : 'Enter fullscreen');
+    fullscreenButton.title = active ? 'Exit fullscreen' : 'Enter fullscreen';
+    fullscreenButton.dataset.tooltip = active ? 'Exit fullscreen' : 'Enter fullscreen';
+  };
+
   const toggleFullscreen = () => {
-    if (document.fullscreenElement) document.exitFullscreen();
-    else if (videoStage.requestFullscreen) videoStage.requestFullscreen();
+    if (document.fullscreenElement) {
+      document.exitFullscreen()?.catch?.(() => setStatus('Could not exit fullscreen', true));
+      return;
+    }
+    if (!videoStage.requestFullscreen) {
+      setStatus('Fullscreen is not supported by this browser', true);
+      return;
+    }
+    videoStage.requestFullscreen().catch(() => setStatus('Fullscreen was blocked by the browser', true));
   };
 
   const adjustSpeed = (direction) => {
@@ -595,20 +950,9 @@
   muteButton.addEventListener('click', toggleMute);
   speedSelect.addEventListener('change', () => { video.playbackRate = Number(speedSelect.value); revealControls(); });
   fullscreenButton.addEventListener('click', toggleFullscreen);
-  audioSelect.addEventListener('change', () => {
-    if (hlsInstance) {
-      hlsInstance.audioTrack = Number(audioSelect.value);
-      return;
-    }
-    if (dashInstance && typeof dashInstance.setCurrentTrack === 'function') {
-      const tracks = dashInstance.getTracksFor('audio') || [];
-      if (tracks[Number(audioSelect.value)]) dashInstance.setCurrentTrack(tracks[Number(audioSelect.value)]);
-      return;
-    }
-    const tracks = video.audioTracks;
-    if (!tracks) return;
-    Array.from(tracks).forEach((track, index) => { track.enabled = String(index) === audioSelect.value; });
-  });
+  document.addEventListener('fullscreenchange', updateFullscreenButton);
+  audioSelect.addEventListener('change', () => selectAudioTrack(audioSelect.value));
+  subtitleSelect?.addEventListener('change', () => selectSubtitleTrack(subtitleSelect.value));
   openVideoButton.addEventListener('click', () => videoFile.click());
   const openUrl = () => loadRemoteSource(videoUrl.value);
   openUrlButton.addEventListener('click', openUrl);
@@ -633,10 +977,14 @@
   });
   subtitleFile.addEventListener('change', () => {
     const file = subtitleFile.files[0];
+    const generation = sourceGeneration;
     if (!file) return;
     subtitleFileName.textContent = file.name;
     const reader = new FileReader();
-    reader.addEventListener('load', () => loadSubtitleText(String(reader.result || ''), file.name));
+    reader.addEventListener('load', () => {
+      if (generation !== sourceGeneration) return;
+      loadSubtitleText(String(reader.result || ''), file.name);
+    });
     reader.addEventListener('error', () => setStatus('Could not read subtitle file', true));
     reader.readAsText(file);
   });
@@ -663,9 +1011,11 @@
   video.addEventListener('loadedmetadata', () => {
     restoreResumePosition();
     refreshAudioTracks();
-    if (usingHls || usingDash) bindHlsTextTracks();
+    bindNativeSubtitleTracks();
     updateProgress();
-    setStatus(`${formatTime(video.duration)} ready`);
+    const hasNativeTracks = embeddedTrackModel.audio.length > 0 || embeddedTrackModel.subtitle.length > 0;
+    const tracksExposed = typeof video.audioTracks !== 'undefined' || embeddedTrackModel.subtitle.length > 0;
+    setStatus(`${formatTime(video.duration)} ready${!usingHls && !usingDash && !hasNativeTracks && !tracksExposed ? ' — embedded audio/subtitle tracks are not exposed by this browser' : ''}`);
     if (pendingAutoplay) {
       pendingAutoplay = false;
       video.play().catch(() => setStatus('Playback was blocked; press play to start', true));
@@ -739,7 +1089,7 @@
       if (payload.enabled === false || payload.is_public === false) { setStatus('This shared stream is disabled.', true); return true; }
       const source = payload.playback_url || payload.stream_url || payload.url || payload.source;
       if (!source) { setStatus('The shared stream is unavailable. Ask the owner to check its source.', true); return true; }
-      loadRemoteSource(source, payload.name || slug, { autoplay: false });
+      loadRemoteSource(source, payload.title || payload.name || slug, { autoplay: false });
       if (payload.subtitle || payload.subtitle_url) loadSubtitleUrl(payload.subtitle || payload.subtitle_url);
     } catch (error) {
       setStatus(`Could not load shared stream: ${error.message}. Check the server or use a direct URL.`, true);
@@ -760,4 +1110,5 @@
   });
   updatePlayButton();
   updateMuteButton();
+  updateFullscreenButton();
 })();
